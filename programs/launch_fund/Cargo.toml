@@ -1,0 +1,24 @@
+[package]
+name = "launch_fund"
+version = "0.1.0"
+description = "Crowdfunding platform with bonding curves on Solana"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "launch_fund"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.31.0"
+anchor-spl = "0.31.0"
+solana-program = "1.17.0"
+pyth-solana-receiver-sdk = "0.2.4"
+jupiter-core = "0.1.0"
+spl-token = "4.0.0"
