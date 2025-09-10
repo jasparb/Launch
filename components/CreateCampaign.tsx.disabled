@@ -1,0 +1,1017 @@
+import { useState, useEffect } from 'react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { Program, AnchorProvider, web3, BN } from '@coral-xyz/anchor'
+import { PublicKey } from '@solana/web3.js'
+import { PlusIcon, TrashIcon, DocumentIcon, VideoCameraIcon, PhotoIcon, LinkIcon } from '@heroicons/react/24/outline'
+import AirdropTaskSetup from './AirdropTaskSetup'
+import RoadmapSetup from './RoadmapSetup'
+import InfoTooltip from './InfoTooltip'
+import { campaignManager } from '../lib/campaignStorage'
+import { useSmartContractIntegration } from '../lib/smartContractIntegration'
+import { useCreatorFundingPools } from '../lib/creatorFundingPools'
+
+interface CreateCampaignProps {
+  onClose: () => void
+}
+
+export default function CreateCampaign({ onClose }: CreateCampaignProps) {
+  const wallet = useWallet()
+  const { publicKey, signTransaction } = wallet
+  const { connection } = useConnection()
+  const smartContract = useSmartContractIntegration()
+  const fundingPoolManager = useCreatorFundingPools()
+  
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    enableAirdrop: false,
+    enableRoadmap: true,
+    // Funding Pool Settings
+    depositWallet: '', // Wallet address where donations will be sent
+    // Access Key Minting
+    enableAccessKeys: true,
+    accessKeyName: '',
+    maxSupply: '',
+    pricePerKey: '1.00' // Default $1 as mentioned in original concept
+  })
+  const [coverPhoto, setCoverPhoto] = useState<{
+    file: File | null
+    preview: string | null
+  }>({ file: null, preview: null })
+  const [loading, setLoading] = useState(false)
+  const [showAirdropSetup, setShowAirdropSetup] = useState(false)
+  const [showRoadmapSetup, setShowRoadmapSetup] = useState(false)
+  const [airdropConfig, setAirdropConfig] = useState<any>(null)
+  const [roadmapConfig, setRoadmapConfig] = useState<any>(null)
+  const [attachments, setAttachments] = useState<Array<{
+    id: string
+    name: string
+    label: string
+    type: string
+    size: number
+    url?: string
+    file?: File
+  }>>([])
+  const [dragOver, setDragOver] = useState(false)
+  const [links, setLinks] = useState<Array<{
+    id: string
+    label: string
+    url: string
+  }>>([
+    { id: '1', label: 'Website', url: '' },
+    { id: '2', label: 'Twitter', url: '' }
+  ])
+
+  // Solana address validation function
+  const isValidSolanaAddress = (address: string): boolean => {
+    try {
+      // Check if address is empty or not exactly 44 characters
+      if (!address || address.length !== 44) {
+        return false
+      }
+      
+      // Check if it contains only valid base58 characters
+      const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/
+      if (!base58Regex.test(address)) {
+        return false
+      }
+      
+      // Try to create PublicKey instance
+      const pubkey = new PublicKey(address)
+      
+      // Additional check: ensure the created PublicKey toString matches input
+      // This catches cases where PublicKey constructor auto-corrects invalid input
+      return pubkey.toString() === address
+    } catch {
+      return false
+    }
+  }
+
+  // Cleanup preview URLs on unmount
+  useEffect(() => {
+    return () => {
+      if (coverPhoto.preview) {
+        URL.revokeObjectURL(coverPhoto.preview)
+      }
+    }
+  }, [])
+
+  const handleCoverPhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      // Validate file type - accept images and GIFs
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+      if (!allowedTypes.includes(file.type.toLowerCase())) {
+        alert('Please select an image file (JPEG, PNG, GIF, or WebP)')
+        return
+      }
+      
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        alert('Image must be less than 5MB')
+        return
+      }
+      
+      // Create preview URL
+      const previewUrl = URL.createObjectURL(file)
+      setCoverPhoto({ file, preview: previewUrl })
+    }
+  }
+
+  const removeCoverPhoto = () => {
+    if (coverPhoto.preview) {
+      URL.revokeObjectURL(coverPhoto.preview)
+    }
+    setCoverPhoto({ file: null, preview: null })
+  }
+
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    // Validate wallet connection
+    if (!publicKey || !signTransaction) {
+      alert('Please connect your external wallet (Phantom, Solflare, etc.) first')
+      return
+    }
+    
+    // Check wallet connection state
+    console.log('Wallet state:', {
+      publicKey: publicKey.toString(),
+      signTransaction: !!signTransaction
+    })
+    
+    // If roadmap is enabled but not configured, show setup
+    if (formData.enableRoadmap && !roadmapConfig) {
+      setShowRoadmapSetup(true)
+      return
+    }
+    
+    // If airdrop is enabled but not configured, show setup
+    if (formData.enableAirdrop && !airdropConfig) {
+      setShowAirdropSetup(true)
+      return
+    }
+    
+    setLoading(true)
+    try {
+      // Get creator info
+      const creatorAddress = publicKey.toString()
+      const creatorDisplayName = `${creatorAddress.slice(0, 4)}...${creatorAddress.slice(-4)}`
+      
+      // Convert cover photo to base64 data URL if present
+      let coverPhotoUrl: string | undefined
+      if (coverPhoto.file) {
+        const reader = new FileReader()
+        coverPhotoUrl = await new Promise((resolve) => {
+          reader.onloadend = () => resolve(reader.result as string)
+          reader.readAsDataURL(coverPhoto.file!)
+        })
+      }
+      
+      
+      // First create the smart contract campaign
+      const smartContractParams = {
+        name: formData.name,
+        description: formData.description,
+        targetAmount: 100,
+        endTimestamp: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60), // 30 days from now
+        fundingRatio: 100, // Default funding ratio
+        conversionStrategy: 'Instant' as 'Instant' | 'OnWithdrawal' | 'Hybrid',
+        roadmapStages: roadmapConfig ? roadmapConfig.stages : undefined,
+        airdropConfig: airdropConfig ? {
+          rewardMode: airdropConfig.reward_mode as 'PerTask' | 'AllRequired',
+          tasks: airdropConfig.tasks.map((task: any) => ({
+            taskType: task.task_type as any,
+            rewardAmount: task.reward_amount,
+            verificationData: task.verification_data,
+            maxCompletions: task.max_completions
+          })),
+          bundleReward: airdropConfig.bundle_reward || 0,
+          totalBudget: airdropConfig.total_budget,
+          endTimestamp: airdropConfig.end_timestamp
+        } : undefined
+      }
+
+      console.log('Creating smart contract campaign with params:', smartContractParams)
+      
+      // Add comprehensive debugging for test mode detection
+      console.log('🔍 DEBUGGING TEST MODE - Campaign Creation Starting')
+      console.log('Wallet state:', {
+        connected: wallet.connected,
+        connecting: wallet.connecting,
+        publicKey: wallet.publicKey?.toString(),
+        signTransaction: !!wallet.signTransaction
+      })
+      
+      // Test smart contract initialization
+      console.log('Testing smart contract accessibility...')
+      try {
+        const testResult = await smartContract.getCampaignData('test')
+        console.log('Smart contract test result:', testResult)
+      } catch (testError) {
+        console.log('Smart contract test failed (expected):', testError)
+      }
+      
+      const smartContractResult = await smartContract.createCampaign(smartContractParams)
+      
+      // Debug the smart contract result
+      console.log('🔍 SMART CONTRACT RESULT:', {
+        success: smartContractResult.success,
+        campaignId: smartContractResult.campaignId,
+        tokenMint: smartContractResult.tokenMint,
+        signature: smartContractResult.signature,
+        isMock: smartContractResult.campaignId?.startsWith('mock_')
+      })
+      
+      if (!smartContractResult.success) {
+        throw new Error(smartContractResult.error || 'Failed to create smart contract campaign')
+      }
+
+      // Funding pools disabled - using direct wallet transfers
+      let fundingPoolId = null
+      /*
+      if (false && smartContractResult.tokenMint && publicKey) {
+        console.log('Creating funding pool...', {
+          tokenMint: smartContractResult.tokenMint,
+          fundingPoolPercentage: formData.fundingPoolPercentage,
+          currency: formData.fundingCurrency
+        })
+
+        const fundingPoolConfig = {
+          poolPercentage: parseInt(formData.fundingPoolPercentage),
+          liquidityPercentage: parseInt(formData.liquidityPoolPercentage),
+          currency: formData.fundingCurrency as 'SOL' | 'USDC',
+          withdrawalSchedule: {
+            type: formData.withdrawalType as 'Immediate' | 'Milestone' | 'TimeVested',
+            vestingPeriodDays: formData.withdrawalType === 'TimeVested' ? parseInt(formData.vestingPeriodDays) : undefined,
+            vestingCliff: formData.withdrawalType === 'TimeVested' ? parseInt(formData.vestingCliff) : undefined
+          },
+          creatorAddress: publicKey.toString(),
+          requiresVoting: formData.requiresVoting,
+          minimumVotes: parseInt(formData.minimumVotes),
+          platformFeePercent: 1, // 1% platform fee
+          emergencyUnlock: false
+        }
+
+        const poolResult = await fundingPoolManager.createFundingPool(
+          smartContractResult.campaignAddress,
+          smartContractResult.tokenMint,
+          fundingPoolConfig
+        )
+
+        if (poolResult.success) {
+          fundingPoolId = poolResult.poolId
+          console.log('Funding pool created successfully:', fundingPoolId)
+        } else {
+          console.warn('Failed to create funding pool:', poolResult.error)
+          // Continue with campaign creation even if funding pool fails
+        }
+      }
+      */
+
+      // Then create the local campaign using the smart contract address
+      const campaign = await campaignManager.createCampaign(
+        {
+          name: formData.name,
+          description: formData.description,
+          targetAmount: '100',
+          duration: '30',
+          fundingRatio: '100',
+          conversionStrategy: 'Instant',
+          enableAirdrop: formData.enableAirdrop,
+          enableRoadmap: formData.enableRoadmap,
+          airdropConfig,
+          roadmapConfig,
+          attachments,
+          links: links.filter(link => link.url.trim()),
+          coverPhoto: coverPhotoUrl,
+          tokenName: formData.name,
+          tokenSymbol: 'TOKEN',
+          totalSupply: '1000000',
+          tokenIcon: undefined
+        },
+        creatorAddress,
+        creatorDisplayName
+      )
+      
+      // Update the campaign with the smart contract address
+      const campaignAddress = smartContractResult.campaignId
+      if (campaignAddress) {
+        campaignManager.updateCampaign(campaign.id, {
+          publicKey: campaignAddress,
+          tokenMint: smartContractResult.tokenMint
+        })
+      }
+      
+      console.log('Campaign created successfully:', {
+        localCampaign: campaign,
+        smartContractAddress: smartContractResult.campaignId,
+        transactionSignature: smartContractResult.signature
+      })
+
+      console.log('Campaign ID for routing:', campaign.id)
+      console.log('Campaign publicKey:', campaign.publicKey)
+      
+      // Check if it's a mock campaign
+      const isMock = campaignAddress && campaignAddress.startsWith('mock_')
+      
+      if (isMock) {
+        alert(`Campaign created successfully!\nNote: Running in test mode - smart contract not deployed.\nCampaign ID: ${campaign.id}`)
+      } else {
+        alert(`Campaign created successfully!\nSmart Contract: ${campaignAddress}\nTransaction: ${smartContractResult.signature}`)
+      }
+      onClose()
+    } catch (error: any) {
+      console.error('Error creating campaign:', {
+        error: error,
+        message: error.message,
+        stack: error.stack,
+        formData: formData,
+        publicKey: publicKey?.toString(),
+      })
+      
+      let userMessage = 'Failed to create campaign'
+      if (error.message) {
+        if (error.message.includes('not connected')) {
+          userMessage = 'Wallet not connected. Please connect your wallet and try again.'
+        } else if (error.message.includes('insufficient')) {
+          userMessage = 'Insufficient SOL balance. You need SOL for transaction fees.'
+        } else if (error.message.includes('program') || error.message.includes('Program') || error.message.includes('signer') || error.message.includes('Wallet signing')) {
+          userMessage = 'Smart contract not available. Creating local campaign instead...'
+          
+          // Fallback: Create local campaign only
+          try {
+            const creatorAddress = publicKey!.toString()
+            const creatorDisplayName = `${creatorAddress.slice(0, 4)}...${creatorAddress.slice(-4)}`
+            
+            const campaign = await campaignManager.createCampaign(
+              {
+                name: formData.name,
+                description: formData.description,
+                fundingRatio: '100',
+                conversionStrategy: 'Instant',
+                enableAirdrop: formData.enableAirdrop,
+                enableRoadmap: formData.enableRoadmap,
+                airdropConfig,
+                roadmapConfig,
+                tokenName: formData.tokenName || formData.name,
+                tokenSymbol: formData.tokenSymbol || formData.name.substring(0, 4).toUpperCase(),
+                totalSupply: formData.totalSupply,
+                coverPhoto: coverPhoto.preview,
+                tokenIcon: tokenIcon.preview,
+                attachments,
+                links
+              },
+              creatorAddress,
+              creatorDisplayName
+            )
+            
+            console.log('Local campaign created successfully:', campaign)
+            alert(`Local campaign created successfully!\nNote: Smart contract deployment failed, but your campaign is saved locally.`)
+            onClose()
+            return
+          } catch (localError) {
+            console.error('Failed to create local campaign:', localError)
+            userMessage = 'Failed to create both smart contract and local campaign'
+          }
+        } else if (error.message.includes('rate limit') || error.message.includes('429')) {
+          userMessage = 'Network is busy. Please wait a moment and try again.'
+        } else {
+          userMessage = `Failed to create campaign: ${error.message}`
+        }
+      }
+      
+      alert(userMessage)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleAirdropSave = (config: any) => {
+    setAirdropConfig(config)
+    setShowAirdropSetup(false)
+  }
+
+  const handleRoadmapSave = (config: any) => {
+    setRoadmapConfig(config)
+    setShowRoadmapSetup(false)
+  }
+
+  const handleFileUpload = (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    const newAttachments = fileArray.map(file => ({
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      name: file.name,
+      label: file.name.replace(/\.[^/.]+$/, ''), // Default label is filename without extension
+      type: file.type,
+      size: file.size,
+      file
+    }))
+    setAttachments(prev => [...prev, ...newAttachments])
+  }
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(att => att.id !== id))
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const files = e.dataTransfer.files
+    handleFileUpload(files)
+  }
+
+  const getFileIcon = (type: string) => {
+    if (type.startsWith('video/')) {
+      return <VideoCameraIcon className="w-6 h-6 text-blue-400" />
+    } else if (type.startsWith('image/')) {
+      return <PhotoIcon className="w-6 h-6 text-green-400" />
+    } else {
+      return <DocumentIcon className="w-6 h-6 text-gray-400" />
+    }
+  }
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
+
+  const addLink = () => {
+    const newLink = {
+      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      label: '',
+      url: ''
+    }
+    setLinks(prev => [...prev, newLink])
+  }
+
+  const removeLink = (id: string) => {
+    setLinks(prev => prev.filter(link => link.id !== id))
+  }
+
+
+  const updateLink = (id: string, field: string, value: string) => {
+    setLinks(prev => prev.map(link => 
+      link.id === id ? { ...link, [field]: value } : link
+    ))
+  }
+
+  return (
+    <>
+      {showRoadmapSetup && (
+        <RoadmapSetup
+          onClose={() => setShowRoadmapSetup(false)}
+          onSave={handleRoadmapSave}
+        />
+      )}
+      
+      {showAirdropSetup && (
+        <AirdropTaskSetup
+          campaignPubkey="" // Will be set after campaign creation
+          onClose={() => setShowAirdropSetup(false)}
+          onSave={handleAirdropSave}
+        />
+      )}
+      
+      <div className="bg-gradient-to-br from-purple-900/80 via-blue-900/80 to-indigo-900/80 backdrop-blur-md rounded-xl border border-purple-500/30 max-w-2xl mx-auto shadow-2xl shadow-purple-500/10">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-purple-600/50 to-pink-600/50 rounded-t-xl p-6 border-b border-purple-500/30">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-bold bg-gradient-to-r from-white to-purple-100 bg-clip-text text-transparent">
+                Create New Campaign
+              </h2>
+              <p className="text-purple-200/80 text-sm mt-1">Launch your crowdfunding campaign</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-purple-200/60 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-lg"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        
+        {/* Content */}
+        <div className="p-8">
+      
+      <form id="campaign-form" onSubmit={handleSubmit} className="space-y-6">
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            <span className="flex items-center">
+              Campaign Name
+              <InfoTooltip text="The name of your project or campaign. This will be displayed prominently on your campaign page and in search results." />
+            </span>
+          </label>
+          <input
+            type="text"
+            required
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-purple-400"
+            placeholder="Enter campaign name"
+          />
+        </div>
+        
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            <span className="flex items-center">
+              Description
+              <InfoTooltip text="Provide a detailed description of your project, its goals, and what makes it unique. This helps supporters understand your vision." />
+            </span>
+          </label>
+          <textarea
+            required
+            value={formData.description}
+            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+            rows={4}
+            className="w-full px-4 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-purple-400"
+            placeholder="Describe your project and goals"
+          />
+        </div>
+        
+        {/* Project Cover Photo */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            <span className="flex items-center">
+              Project Cover Photo
+              <InfoTooltip text="Upload an eye-catching image that represents your project. This will be displayed on your campaign card and detail page." />
+            </span>
+          </label>
+          
+          {!coverPhoto.preview ? (
+            <div className="border-2 border-dashed border-white/20 rounded-lg p-6 text-center hover:border-white/40 transition-colors">
+              <PhotoIcon className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+              <p className="text-gray-300 mb-2">Upload a cover image or GIF for your project</p>
+              <label className="inline-block px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg cursor-pointer transition-colors">
+                Choose Image/GIF
+                <input
+                  type="file"
+                  accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
+                  onChange={handleCoverPhotoChange}
+                  className="hidden"
+                />
+              </label>
+              <p className="text-xs text-gray-400 mt-2">PNG, JPG, GIF, WebP - Max 5MB</p>
+            </div>
+          ) : (
+            <div className="relative">
+              <img
+                src={coverPhoto.preview}
+                alt="Cover preview"
+                className="w-full h-48 object-cover rounded-lg border border-white/20"
+              />
+              <button
+                type="button"
+                onClick={removeCoverPhoto}
+                className="absolute top-2 right-2 p-2 bg-red-500 hover:bg-red-600 text-white rounded-full transition-colors"
+              >
+                <TrashIcon className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+        
+
+        
+        {/* Creator Funding Pool Configuration */}
+        <div className="bg-white/5 backdrop-blur-sm rounded-xl p-6 border border-purple-300/20">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-green-500 to-emerald-600 flex items-center justify-center">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-white">Funding Pool</h3>
+              <p className="text-sm text-gray-400">Configure donation wallet</p>
+            </div>
+          </div>
+          
+          {/* Deposit Wallet */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              <span className="flex items-center">
+                Deposit Wallet Address
+                <InfoTooltip text="Solana wallet address where donations will be sent directly. Must be a valid Solana address." />
+              </span>
+            </label>
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  required
+                  value={formData.depositWallet}
+                  onChange={(e) => setFormData({ ...formData, depositWallet: e.target.value })}
+                  className={`flex-1 px-4 py-2 border rounded-lg text-white placeholder-gray-400 focus:outline-none ${
+                    formData.depositWallet && !isValidSolanaAddress(formData.depositWallet)
+                      ? 'bg-red-900/20 border-red-500 focus:border-red-400'
+                      : 'bg-white/10 border-white/20 focus:border-green-400'
+                  }`}
+                  placeholder={publicKey ? `${publicKey.toString()}` : "Connect wallet to see your address"}
+                />
+                {publicKey && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, depositWallet: publicKey.toString() })}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors"
+                  >
+                    Use My Wallet
+                  </button>
+                )}
+              </div>
+              {formData.depositWallet && (
+                <div className="flex items-center gap-2 text-sm">
+                  {isValidSolanaAddress(formData.depositWallet) ? (
+                    <>
+                      <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                      <span className="text-green-400">Valid Solana address</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-2 h-2 bg-red-400 rounded-full"></div>
+                      <span className="text-red-400">Invalid Solana address format</span>
+                    </>
+                  )}
+                </div>
+              )}
+              <div className="text-xs text-gray-400">
+                💡 Tip: Use your own wallet address to receive donations directly, or create a dedicated project wallet for better fund management.
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            <span className="flex items-center">
+              Price Protection Strategy
+              <InfoTooltip text="Choose how to protect your funding from SOL price changes: Instant USDC (safest), Hybrid (balanced), or Deferred (most SOL exposure)." />
+            </span>
+          </label>
+          <div className="grid grid-cols-3 gap-3">
+            <div
+              className={`p-4 rounded-lg border cursor-pointer transition-all ${
+                formData.conversionStrategy === 'instant'
+                  ? 'bg-green-500/20 border-green-500'
+                  : 'bg-white/10 border-white/20 hover:bg-white/20'
+              }`}
+              onClick={() => setFormData({ ...formData, conversionStrategy: 'instant' })}
+            >
+              <div className="text-center">
+                <div className="text-2xl mb-1">⚡</div>
+                <div className="text-sm font-semibold text-white">Instant</div>
+                <div className="text-xs text-gray-400 mt-1">Convert to USDC immediately</div>
+              </div>
+            </div>
+            
+            <div
+              className={`p-4 rounded-lg border cursor-pointer transition-all ${
+                formData.conversionStrategy === 'hybrid'
+                  ? 'bg-blue-500/20 border-blue-500'
+                  : 'bg-white/10 border-white/20 hover:bg-white/20'
+              }`}
+              onClick={() => setFormData({ ...formData, conversionStrategy: 'hybrid' })}
+            >
+              <div className="text-center">
+                <div className="text-2xl mb-1">⚖️</div>
+                <div className="text-sm font-semibold text-white">Hybrid</div>
+                <div className="text-xs text-gray-400 mt-1">50% USDC, 50% SOL</div>
+              </div>
+            </div>
+            
+            <div
+              className={`p-4 rounded-lg border cursor-pointer transition-all ${
+                formData.conversionStrategy === 'deferred'
+                  ? 'bg-orange-500/20 border-orange-500'
+                  : 'bg-white/10 border-white/20 hover:bg-white/20'
+              }`}
+              onClick={() => setFormData({ ...formData, conversionStrategy: 'deferred' })}
+            >
+              <div className="text-center">
+                <div className="text-2xl mb-1">📈</div>
+                <div className="text-sm font-semibold text-white">Deferred</div>
+                <div className="text-xs text-gray-400 mt-1">Convert on withdrawal</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="mt-3 p-3 bg-gray-800/30 rounded-lg">
+            <div className="text-sm text-gray-300">
+              {formData.conversionStrategy === 'instant' && (
+                <>
+                  <strong className="text-green-400">Maximum Protection:</strong> All funding instantly converted to USDC. Zero price risk, small gas cost per purchase.
+                </>
+              )}
+              {formData.conversionStrategy === 'hybrid' && (
+                <>
+                  <strong className="text-blue-400">Balanced Risk:</strong> 50% stable USDC, 50% SOL exposure. Moderate protection, reduced gas costs.
+                </>
+              )}
+              {formData.conversionStrategy === 'deferred' && (
+                <>
+                  <strong className="text-orange-400">SOL Exposure:</strong> Keep all funding as SOL until withdrawal. Potential upside/downside, lowest gas costs.
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Campaign Economics */}
+        <div className="bg-purple-900/30 rounded-lg p-4 border border-purple-500/30">
+          <h3 className="text-sm font-semibold text-purple-300 mb-2">Campaign Economics</h3>
+          <ul className="text-sm text-gray-300 space-y-1">
+            <li>• Your token allocation: 10% of total supply (vested)</li>
+            <li>• Funding rate: {100}% of purchases → {
+              formData.conversionStrategy === 'instant' ? 'instant USDC' :
+              formData.conversionStrategy === 'hybrid' ? '50% USDC + 50% SOL' :
+              'SOL (convert on withdrawal)'
+            }</li>
+            <li>• Liquidity rate: {0}% → tradeable SOL market</li>
+            <li>• After goal reached: 100% to liquidity for maximum trading</li>
+            <li>• Trading fees: 1% of all trades goes to you continuously</li>
+            <li>• Risk level: {
+              formData.conversionStrategy === 'instant' ? 'Minimal (USDC protected)' :
+              formData.conversionStrategy === 'hybrid' ? 'Moderate (partial SOL exposure)' :
+              'Higher (full SOL exposure until withdrawal)'
+            }</li>
+          </ul>
+        </div>
+
+        {/* Attachments Section */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            <span className="flex items-center">
+              Project Attachments
+              <InfoTooltip text="Upload files, images, and videos to showcase your project. This helps potential funders understand your vision and progress." />
+            </span>
+          </label>
+          
+          {/* Upload Area */}
+          <div
+            className={`border-2 border-dashed rounded-lg p-6 text-center transition-all ${
+              dragOver 
+                ? 'border-purple-400 bg-purple-500/10' 
+                : 'border-white/20 hover:border-white/40 bg-white/5'
+            }`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <div className="flex flex-col items-center">
+              <PlusIcon className="w-8 h-8 text-gray-400 mb-2" />
+              <p className="text-gray-300 mb-2">
+                Drag and drop files here, or{' '}
+                <label className="text-purple-400 hover:text-purple-300 cursor-pointer underline">
+                  browse files
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+                    onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
+                    className="hidden"
+                  />
+                </label>
+              </p>
+              <p className="text-xs text-gray-400">
+                Supports: Images, Videos, PDFs, Documents (Max 50MB per file)
+              </p>
+            </div>
+          </div>
+
+          {/* Uploaded Files */}
+          {attachments.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <h4 className="text-sm font-medium text-gray-300">Uploaded Files ({attachments.length})</h4>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {attachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="p-3 bg-white/5 rounded-lg border border-white/10 space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 flex-1">
+                        {getFileIcon(attachment.type)}
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            value={attachment.label}
+                            onChange={(e) => {
+                              setAttachments(prev => prev.map(att => 
+                                att.id === attachment.id 
+                                  ? { ...att, label: e.target.value }
+                                  : att
+                              ))
+                            }}
+                            placeholder="Enter display name"
+                            className="w-full bg-white/10 border border-white/20 rounded px-2 py-1 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-purple-400"
+                          />
+                          <p className="text-xs text-gray-400 mt-1">
+                            {attachment.name} • {formatFileSize(attachment.size)}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(attachment.id)}
+                        className="text-red-400 hover:text-red-300 transition-colors ml-3"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Links Section */}
+        <div>
+          <div className="flex justify-between items-center mb-3">
+            <label className="block text-sm font-medium text-gray-300">
+              <span className="flex items-center">
+                Project Links
+                <InfoTooltip text="Add links to your social media, website, documentation, and other important resources. This helps funders learn more about you and your project." />
+              </span>
+            </label>
+            <button
+              type="button"
+              onClick={addLink}
+              className="flex items-center gap-1 px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-sm transition-colors"
+            >
+              <PlusIcon className="w-4 h-4" />
+              Add Link
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            {links.map((link, index) => (
+              <div key={link.id} className="bg-white/5 rounded-lg border border-white/10 p-3">
+                <div className="flex gap-3 items-end">
+                  <div className="flex-1">
+                    <label className="block text-xs text-gray-400 mb-1">Label</label>
+                    <input
+                      type="text"
+                      value={link.label}
+                      onChange={(e) => updateLink(link.id, 'label', e.target.value)}
+                      placeholder="e.g., Official Website, Twitter, GitHub"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm placeholder-gray-400 focus:outline-none focus:border-purple-400"
+                    />
+                  </div>
+
+                  <div className="flex-1">
+                    <label className="block text-xs text-gray-400 mb-1">URL</label>
+                    <input
+                      type="url"
+                      value={link.url}
+                      onChange={(e) => updateLink(link.id, 'url', e.target.value)}
+                      placeholder="https://..."
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm placeholder-gray-400 focus:outline-none focus:border-purple-400"
+                    />
+                  </div>
+
+                  {links.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeLink(link.id)}
+                      className="p-2 text-red-400 hover:text-red-300 transition-colors"
+                    >
+                      <TrashIcon className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Links Preview */}
+          {links.some(link => link.url.trim()) && (
+            <div className="mt-4 p-3 bg-blue-500/20 border border-blue-500/30 rounded-lg">
+              <h4 className="text-sm font-medium text-blue-300 mb-2">Links Preview:</h4>
+              <div className="flex flex-wrap gap-2">
+                {links
+                  .filter(link => link.url.trim())
+                  .map(link => (
+                    <div
+                      key={link.id}
+                      className="flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full border border-white/20"
+                    >
+                      <span className="text-sm text-white">
+                        {link.label || 'Link'}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+
+        {/* Roadmap Option */}
+        <div>
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              checked={formData.enableRoadmap}
+              onChange={(e) => setFormData({ ...formData, enableRoadmap: e.target.checked })}
+              className="mr-3 w-4 h-4 text-purple-600 bg-white/10 border-white/20 rounded focus:ring-purple-500"
+            />
+            <span className="text-white font-medium flex items-center">
+              Show Project Roadmap
+              <InfoTooltip text="Display a visual roadmap showing your project milestones and progress. Helps donors understand your development plan and track your progress." />
+            </span>
+          </label>
+          <p className="text-sm text-gray-400 mt-2 ml-7">
+            Display a visual timeline of your project milestones for donors
+          </p>
+          
+          {formData.enableRoadmap && (
+            <div className="mt-4 p-4 bg-white/5 rounded-lg border border-white/10">
+              {roadmapConfig ? (
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-green-400 font-medium">Roadmap configured</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowRoadmapSetup(true)}
+                      className="text-purple-400 hover:text-purple-300 text-sm"
+                    >
+                      Edit roadmap
+                    </button>
+                  </div>
+                  <div className="text-sm text-gray-300">
+                    <p>• {roadmapConfig.stages?.length || 0} milestones configured</p>
+                    <p>• Visual progress tracking for donors</p>
+                    <p>• Project timeline and deliverables</p>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-orange-400 font-medium mb-2">Roadmap not configured</p>
+                  <p className="text-sm text-gray-400 mb-3">
+                    Set up your project timeline and milestones to show donors your development plan
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowRoadmapSetup(true)}
+                    className="text-purple-400 hover:text-purple-300 text-sm"
+                  >
+                    Configure now →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        
+        </form>
+        
+        {/* Footer Actions */}
+        <div className="bg-gradient-to-r from-purple-600/20 to-pink-600/20 rounded-b-xl p-6 border-t border-purple-500/30 -m-8 mt-6">
+          <div className="flex gap-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-3 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all border border-white/20"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="campaign-form"
+              disabled={loading}
+              className="flex-1 bg-gradient-to-r from-purple-600 to-pink-600 text-white py-3 rounded-lg font-semibold hover:from-purple-700 hover:to-pink-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25"
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  Creating Campaign...
+                </span>
+              ) : (
+                'Create Campaign'
+              )}
+            </button>
+          </div>
+        </div>
+        </div>
+      </div>
+    </>
+  )
+}

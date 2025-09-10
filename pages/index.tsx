@@ -1,88 +1,127 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import ClientWalletButton from '../components/ClientWalletButton'
 import CampaignList from '../components/CampaignList'
-import CreateCampaign from '../components/CreateCampaign'
+// import CreateCampaign from '../components/CreateCampaign'
+import UserPortfolio from '../components/UserPortfolio'
+import GlobalActivityFeed from '../components/GlobalActivityFeed'
+import ErrorDisplay, { useErrorDisplay } from '../components/ErrorDisplay'
+import MyAccessKeys from '../components/MyAccessKeys'
 
 export default function Home() {
   const { publicKey } = useWallet()
   const [showCreate, setShowCreate] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const { error, clearError } = useErrorDisplay()
+
+  const handleCampaignCreated = () => {
+    setShowCreate(false)
+    setRefreshKey(prev => prev + 1) // Force refresh campaign list
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900">
-      <nav className="bg-black/20 backdrop-blur-md border-b border-white/10">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+      {/* Header */}
+      <div className="border-b border-gray-700 bg-gray-800/50 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
-            <div className="flex items-center">
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-                launch.fund
+          <div className="flex items-center justify-between py-4">
+            <div className="flex items-center space-x-4">
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                FundIt
               </h1>
-              <span className="ml-4 text-sm text-gray-400">
-                Crowdfunding with instant liquidity on Solana
+              <span className="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded-full border border-green-500/30">
+                Live on Devnet
               </span>
             </div>
             <div className="flex items-center space-x-4">
-              {publicKey && (
-                <button
-                  onClick={() => setShowCreate(!showCreate)}
-                  className="px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 transition-all"
-                >
-                  Create Campaign
-                </button>
-              )}
-              <WalletMultiButton />
+              <ClientWalletButton />
             </div>
           </div>
         </div>
-      </nav>
+      </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {showCreate && publicKey ? (
-          <CreateCampaign onClose={() => setShowCreate(false)} />
-        ) : (
-          <>
-            <div className="text-center mb-12">
-              <h2 className="text-5xl font-bold text-white mb-4">
-                Fund the Future, Trade the Vision
+      {/* Error Display */}
+      {error && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <ErrorDisplay error={error} onClose={clearError} />
+        </div>
+      )}
+
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+          {/* Left Column - Main Content */}
+          <div className="lg:col-span-3 space-y-8">
+            {/* Hero Section */}
+            <div className="text-center py-12">
+              <h2 className="text-4xl font-bold text-white mb-4">
+                Blockchain Crowdfunding with{' '}
+                <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                  Instant Liquidity
+                </span>
               </h2>
-              <p className="text-xl text-gray-300">
-                Back innovative projects and get tradeable tokens with instant liquidity
+              <p className="text-xl text-gray-300 mb-8 max-w-3xl mx-auto">
+                Create campaigns, trade tokens instantly, and build the future on Solana
               </p>
-            </div>
-
-            <div className="grid gap-4 mb-8">
-              <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
-                <h3 className="text-xl font-semibold text-white mb-4">How It Works</h3>
-                <div className="grid md:grid-cols-3 gap-6">
-                  <div>
-                    <div className="text-3xl mb-2">🚀</div>
-                    <h4 className="font-semibold text-white mb-1">Launch Campaign</h4>
-                    <p className="text-sm text-gray-300">
-                      Create a campaign with automatic token generation and bonding curve
-                    </p>
-                  </div>
-                  <div>
-                    <div className="text-3xl mb-2">💰</div>
-                    <h4 className="font-semibold text-white mb-1">Fund & Trade</h4>
-                    <p className="text-sm text-gray-300">
-                      Support projects and receive tokens you can trade instantly
-                    </p>
-                  </div>
-                  <div>
-                    <div className="text-3xl mb-2">📈</div>
-                    <h4 className="font-semibold text-white mb-1">Price Discovery</h4>
-                    <p className="text-sm text-gray-300">
-                      Token prices rise with demand, rewarding early supporters
-                    </p>
-                  </div>
+              
+              {publicKey ? (
+                <button
+                  onClick={() => setShowCreate(true)}
+                  className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold py-3 px-8 rounded-lg shadow-lg transform hover:scale-105 transition-all duration-200"
+                >
+                  🚀 Create Campaign
+                </button>
+              ) : (
+                <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-auto">
+                  <p className="text-gray-300 mb-4">Connect your wallet to create campaigns</p>
+                  <ClientWalletButton />
                 </div>
-              </div>
+              )}
             </div>
 
-            <CampaignList />
-          </>
-        )}
-      </main>
+            {/* Campaign List */}
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-bold text-white">Active Campaigns</h3>
+                {publicKey && (
+                  <button
+                    onClick={() => setShowCreate(true)}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                  >
+                    + New Campaign
+                  </button>
+                )}
+              </div>
+              <CampaignList key={refreshKey} />
+            </div>
+          </div>
+
+          {/* Right Column - Sidebar */}
+          <div className="space-y-6">
+            {/* My Access Keys */}
+            {publicKey && (
+              <MyAccessKeys />
+            )}
+            
+            {/* User Portfolio */}
+            {publicKey && (
+              <UserPortfolio />
+            )}
+
+            {/* Global Activity Feed */}
+            <GlobalActivityFeed />
+          </div>
+        </div>
+      </div>
+
+      {/* Create Campaign Modal - Disabled */}
+      {/* {showCreate && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-800 rounded-lg max-w-4xl w-full max-h-[90vh] overflow-auto">
+            <CreateCampaign onClose={handleCampaignCreated} />
+          </div>
+        </div>
+      )} */}
     </div>
   )
 }

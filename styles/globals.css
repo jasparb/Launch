@@ -9,10 +9,31 @@
     -webkit-line-clamp: 2;
     overflow: hidden;
   }
+  
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
 }
 
 body {
   @apply text-white;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+
+/* Purple/Blue theme gradients */
+.gradient-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.gradient-secondary {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.gradient-accent {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
 }
 
 /* Custom slider styles */
@@ -39,3 +60,43 @@ body {
   border: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
+
+/* Animated backgrounds */
+.animated-bg {
+  background: linear-gradient(-45deg, #667eea, #764ba2, #f093fb, #f5576c);
+  background-size: 400% 400%;
+  animation: gradient 15s ease infinite;
+}
+
+@keyframes gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Glass morphism effect */
+.glass {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Glowing effects */
+.glow-blue {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+}
+
+.glow-purple {
+  box-shadow: 0 0 20px rgba(147, 51, 234, 0.5);
+}
+
+.glow-pink {
+  box-shadow: 0 0 20px rgba(236, 72, 153, 0.5);
+}
+
